@@ -4,60 +4,115 @@
 
 package frc.robot;
 
-import frc.robot.Constants.OperatorConstants;
-import frc.robot.commands.Autos;
-import frc.robot.commands.ExampleCommand;
-import frc.robot.subsystems.ExampleSubsystem;
+
+import com.pathplanner.lib.auto.AutoBuilder;
+import com.pathplanner.lib.auto.NamedCommands;
+import com.pathplanner.lib.commands.PathPlannerAuto;
+import com.pathplanner.lib.path.PathConstraints;
+import com.pathplanner.lib.pathfinding.Pathfinder;
+
+import CSP_Lib.inputs.CSP_Controller;
+import CSP_Lib.inputs.CSP_Controller.Scale;
+import edu.wpi.first.math.geometry.Pose2d;
+import edu.wpi.first.math.geometry.Rotation2d;
+import edu.wpi.first.math.util.Units;
+import edu.wpi.first.wpilibj.DriverStation;
+import edu.wpi.first.wpilibj.Notifier;
+import edu.wpi.first.wpilibj.smartdashboard.SendableChooser;
+import edu.wpi.first.wpilibj.smartdashboard.SmartDashboard;
 import edu.wpi.first.wpilibj2.command.Command;
-import edu.wpi.first.wpilibj2.command.button.CommandXboxController;
+import edu.wpi.first.wpilibj2.command.ConditionalCommand;
+import edu.wpi.first.wpilibj2.command.InstantCommand;
+import edu.wpi.first.wpilibj2.command.RunCommand;
+import edu.wpi.first.wpilibj2.command.SequentialCommandGroup;
+import edu.wpi.first.wpilibj2.command.Command.InterruptionBehavior;
 import edu.wpi.first.wpilibj2.command.button.Trigger;
+import frc.robot.commands.drivetrain.HockeyStop;
+import frc.robot.commands.drivetrain.TeleDrive;
+import frc.robot.commands.drivetrain.XPattern;
+import frc.robot.commands.AutoConfigs;
+import edu.wpi.first.wpilibj2.command.sysid.SysIdRoutine;
 
-/**
- * This class is where the bulk of the robot should be declared. Since Command-based is a
- * "declarative" paradigm, very little robot logic should actually be handled in the {@link Robot}
- * periodic methods (other than the scheduler calls). Instead, the structure of the robot (including
- * subsystems, commands, and trigger mappings) should be declared here.
- */
+import frc.robot.subsystems.drivetrain.Swerve;
+import frc.robot.subsystems.sensors.Sensors;
+
 public class RobotContainer {
-  // The robot's subsystems and commands are defined here...
-  private final ExampleSubsystem m_exampleSubsystem = new ExampleSubsystem();
 
-  // Replace with CommandPS4Controller or CommandJoystick if needed
-  private final CommandXboxController m_driverController =
-      new CommandXboxController(OperatorConstants.kDriverControllerPort);
+  public static CSP_Controller pilot = new CSP_Controller(Constants.controller.PILOT_PORT);
+  public static CSP_Controller copilot = new CSP_Controller(Constants.controller.COPILOT_PORT);
+  public static CSP_Controller test = new CSP_Controller(2);
 
-  /** The container for the robot. Contains subsystems, OI devices, and commands. */
+  Swerve drive = Swerve.getInstance();
+  Sensors sensors = Sensors.getInstance();
+
+  private SendableChooser<Command> autoChooser = new SendableChooser<Command>();
+
+  private Notifier shuffleUpdater = new Notifier(() -> updateShuffle());
+
   public RobotContainer() {
-    // Configure the trigger bindings
+    // Set the default commands
+    setDefaultCommands();
+
+    smartdashboardButtons();
+
     configureBindings();
+
+    shuffleUpdater.startPeriodic(0.02);
+
+    NamedCommands.registerCommands(AutoConfigs.EVENTS);
+
+    addChooser();
   }
 
-  /**
-   * Use this method to define your trigger->command mappings. Triggers can be created via the
-   * {@link Trigger#Trigger(java.util.function.BooleanSupplier)} constructor with an arbitrary
-   * predicate, or via the named factories in {@link
-   * edu.wpi.first.wpilibj2.command.button.CommandGenericHID}'s subclasses for {@link
-   * CommandXboxController Xbox}/{@link edu.wpi.first.wpilibj2.command.button.CommandPS4Controller
-   * PS4} controllers or {@link edu.wpi.first.wpilibj2.command.button.CommandJoystick Flight
-   * joysticks}.
-   */
+  private void setDefaultCommands() {
+    drive.setDefaultCommand(new XPattern());
+  }
+
   private void configureBindings() {
-    // Schedule `ExampleCommand` when `exampleCondition` changes to `true`
-    new Trigger(m_exampleSubsystem::exampleCondition)
-        .onTrue(new ExampleCommand(m_exampleSubsystem));
+    Trigger drivingInput = new Trigger(() -> (pilot.getCorrectedLeft().getNorm() != 0.0 || pilot.getCorrectedRight().getX() != 0.0));
+    drivingInput
+    .onTrue(    
+      new TeleDrive(
+        () -> pilot.getCorrectedLeft().getX() * (pilot.getRightBumperButton().getAsBoolean() ? 0.125 : 1.0), 
+        () -> pilot.getCorrectedLeft().getY() * (pilot.getRightBumperButton().getAsBoolean() ? 0.125 : 1.0), 
+        () -> pilot.getRightX(Scale.SQUARED) * (pilot.getRightBumperButton().getAsBoolean() ? 0.1 : 1.0)))
+    .onFalse(new HockeyStop().withTimeout(0.5));
 
-    // Schedule `exampleMethodCommand` when the Xbox controller's B button is pressed,
-    // cancelling on release.
-    m_driverController.b().whileTrue(m_exampleSubsystem.exampleMethodCommand());
+    pilot
+        .getStartButton()
+        .onTrue(
+            new InstantCommand(
+                () -> {
+                  drive.resetOdometry(
+                    new Pose2d(drive.getPose2d().getTranslation(), 
+                    Rotation2d.fromDegrees(sensors.getAllianceColor() == DriverStation.Alliance.Red ? 180 : 0)));
+                  drive.rotPID.setSetpoint(180.0);
+                }, sensors));
   }
 
-  /**
-   * Use this to pass the autonomous command to the main {@link Robot} class.
-   *
-   * @return the command to run in autonomous
-   */
+  public void updateShuffle() {
+
+    
+  }
+
+  public void smartdashboardButtons() {
+
+  }
+
+  public void addChooser() {
+    autoChooser.setDefaultOption("Do Nothing", new SequentialCommandGroup());
+    autoChooser.addOption("path find (plesase work)", AutoBuilder.pathfindToPose(
+      new Pose2d(10, 5, Rotation2d.fromDegrees(180)), 
+      new PathConstraints(
+        3.0, 4.0,
+        Units.degreesToRadians(540), Units.degreesToRadians(720)
+      ),
+      0, 0
+      ));
+    SmartDashboard.putData("Auto Chooser", autoChooser);
+  }
+
   public Command getAutonomousCommand() {
-    // An example command will be run in autonomous
-    return Autos.exampleAuto(m_exampleSubsystem);
+    return autoChooser.getSelected();
   }
 }
